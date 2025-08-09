@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CPR Sensor Bluetooth</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="manifest" href="manifest.json" />
+<style>
+  /* ---------- Page & Buttons ---------- */
+  body {
+    font-family: Arial, sans-serif;
+    background: #ffffff;
+    text-align: center;
+    padding: 18px;
+    color: #37474f;
+  }
+  h2 { color: #2e7d32; margin-bottom: 8px; }
+  .btn {
+    padding: 10px 18px;
+    margin: 6px;
+    font-size: 15px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #connectBtn { background: #388e3c; color: white; }
+  #disconnectBtn { background: #d32f2f; color: white; display: none; }
+  #startTrainingBtn { background: #388e3c; color: white; display: none; }
+  #stopTrainingBtn { background: #f57c00; color: white; display: none; }
+  #downloadBtn { background: #fbc02d; color: black; display: none; }
+  #traineeName { padding: 8px; font-size: 14px; display: none; border-radius: 6px; border: 1px solid #ccc; }
+
+  .status-dot {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #d32f2f;
+    margin-left: 8px;
+  }
+
+  /* ---------- Layout (top/bottom halves) ---------- */
+  .top-half { max-width: 780px; margin: 0 auto; }
+  .bottom-half { max-width: 780px; margin: 18px auto 0; }
+
+  /* ---------- CPR Rate Gauge ---------- */
+  .gauge-container {
+    margin-top: 18px;
+    width: 540px;
+    height: 300px;
+    margin-left: auto;
+    margin-right: auto;
+    position: relative;
+  }
+  svg { width: 100%; height: 100%; overflow: visible; }
+  .needle {
+    stroke-width: 6;
+    transform-origin: 270px 250px; /* center in larger svg */
+    transition: transform 0.6s ease-in-out, stroke 0.25s ease-in-out;
+    stroke-linecap: round;
+  }
+  .needle-shadow {
+    stroke: rgba(0,0,0,0.18);
+    stroke-width: 9;
+    transform-origin: 270px 250px;
+    stroke-linecap: round;
+  }
+  .center-cap { fill: #37474f; }
+
+  .tick-label { font-size: 14px; fill: #37474f; text-anchor: middle; }
+  .tick-line { stroke: #37474f; stroke-width: 2; stroke-linecap: round; }
+  .tick-major { stroke-width: 3; }
+
+  /* ---------- Depth segmented bar (styled like sample) ---------- */
+  .depth-wrapper {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .depth-value {
+    font-size: 1.25rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .segments {
+    width: 540px;
+    height: 36px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative;
+    margin-bottom: 8px;
+  }
+
+  .segment {
+    flex: 1 1 0;
+    height: 100%;
+    margin-left: 6px;
+    margin-right: 6px;
+    border-radius: 6px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    background: rgba(0,0,0,0.06);
+    transition: background 0.9s ease, transform 0.3s ease;
+    display: inline-block;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .segment-inner {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 0%;
+    transition: width 1.2s cubic-bezier(.2,.9,.2,1);
+    border-radius: 6px;
+  }
+
+  /* numeric labels under segments (0..60 every 10) */
+  .depth-scale {
+    width: 540px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.95rem;
+    color: #37474f;
+  }
+
+  /* Small responsive */
+  @media (max-width: 640px) {
+    .gauge-container, .segments, .depth-scale { width: 92%; }
+    .tick-label { font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<h2>CPR Sensor <span class="status-dot" id="statusDot"></span></h2>
+
+<!-- Controls -->
+<div>
+  <button id="connectBtn" class="btn">Connect</button>
+  <button id="disconnectBtn" class="btn">Disconnect</button>
+</div>
+
+<div style="margin-top:6px;">
+  <input id="traineeName" placeholder="Enter trainee name" />
+  <button id="startTrainingBtn" class="btn">Start Training</button>
+  <button id="stopTrainingBtn" class="btn">Stop Training</button>
+  <button id="downloadBtn" class="btn">Download CSV</button>
+</div>
+
+<!-- Top half: gauge -->
+<div class="top-half">
+  <div class="gauge-container" aria-hidden="false">
+    <!-- SVG sized to fit larger viewbox to keep needle transform origin consistent -->
+    <svg viewBox="0 0 540 320" role="img" aria-label="CPR Rate Gauge">
+      <!-- Color zones computed for center (cx=270, cy=250), r=190 -->
+      <!-- Red zone: 0–80 -->
+      <path d="M 80 250 A 190 190 0 0 1 292.5 68.333" stroke="#d32f2f" stroke-width="26" fill="none" stroke-linecap="round"/>
+      <!-- Yellow zone: 80–100 -->
+      <path d="M 292.5 68.333 A 190 190 0 0 1 395 123" stroke="#fbc02d" stroke-width="26" fill="none" stroke-linecap="round"/>
+      <!-- Green zone: 100–120 -->
+      <path d="M 395 123 A 190 190 0 0 1 460 250" stroke="#388e3c" stroke-width="26" fill="none" stroke-linecap="round"/>
+
+      <!-- ticks group -->
+      <g id="ticks"></g>
+
+      <!-- Needle shadow and needle (initially pointing up) -->
+      <line id="needleShadow" x1="270" y1="250" x2="270" y2="80" class="needle-shadow"/>
+      <line id="needle" x1="270" y1="250" x2="270" y2="80" class="needle" stroke="#37474f"/>
+      <circle cx="270" cy="250" r="10" class="center-cap"/>
+    </svg>
+  </div>
+</div>
+
+<!-- Bottom half: depth segmented bar -->
+<div class="bottom-half">
+  <div class="depth-wrapper">
+    <div id="depthValue" class="depth-value">Depth: 0.0 mm</div>
+
+    <!-- segmented bar: we'll create 12 small segments (5mm each) visually; labels at 10mm -->
+    <div class="segments" id="segmentsContainer" aria-hidden="true">
+      <!-- segments created by JS -->
+    </div>
+
+    <!-- scale labels at 0,10,...,60 -->
+    <div class="depth-scale">
+      <div>0</div><div>10</div><div>20</div><div>30</div><div>40</div><div>50</div><div>60 mm</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- Constants & UI refs ---------- */
+const SERVICE_UUID = '6e400001-c352-11e5-953d-0002a5d5c51b';
+const CHARACTERISTIC_UUID = '6e400003-c352-11e5-953d-0002a5d5c51b';
+
+const cx = 270, cy = 250, r = 190; // gauge geometry used for tick math
+const maxRate = 120;
+
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const startTrainingBtn = document.getElementById('startTrainingBtn');
+const stopTrainingBtn = document.getElementById('stopTrainingBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const traineeNameInput = document.getElementById('traineeName');
+const statusDot = document.getElementById('statusDot');
+const ticksGroup = document.getElementById('ticks');
+const needle = document.getElementById('needle');
+const needleShadow = document.getElementById('needleShadow');
+
+const depthValueEl = document.getElementById('depthValue');
+const segmentsContainer = document.getElementById('segmentsContainer');
+
+let device = null;
+let characteristic = null;
+let logging = false;
+let traineeName = "";
+let sessionData = []; // will hold {trainee, time, rate, peaks, depth}
+
+/* ---------- Draw gauge ticks & labels (0..120 every 10) ---------- */
+function drawTicks() {
+  while (ticksGroup.firstChild) ticksGroup.removeChild(ticksGroup.firstChild);
+
+  for (let v = 0; v <= maxRate; v += 10) {
+    const f = v / maxRate;
+    // angle 180..360
+    const angleDeg = 180 + f * 180;
+    const rad = angleDeg * Math.PI / 180;
+
+    const tickOuter = r;
+    const tickLen = (v % 20 === 0) ? 24 : 12;
+    const tickInner = r - tickLen;
+
+    const x1 = cx + tickOuter * Math.cos(rad);
+    const y1 = cy + tickOuter * Math.sin(rad);
+    const x2 = cx + tickInner * Math.cos(rad);
+    const y2 = cy + tickInner * Math.sin(rad);
+
+    const tick = document.createElementNS("http://www.w3.org/2000/svg","line");
+    tick.setAttribute("x1", x1.toFixed(2));
+    tick.setAttribute("y1", y.toFixed ? y.toFixed(2) : y1.toFixed(2)); // compatibility
+    tick.setAttribute("x2", x2.toFixed(2));
+    tick.setAttribute("y2", y2.toFixed(2));
+    tick.setAttribute("class", "tick-line");
+    if (v % 20 === 0) tick.classList.add('tick-major');
+    ticksGroup.appendChild(tick);
+
+    // label
+    const labelRadius = r - 48;
+    const lx = cx + labelRadius * Math.cos(rad);
+    const ly = cy + labelRadius * Math.sin(rad);
+    const txt = document.createElementNS("http://www.w3.org/2000/svg","text");
+    txt.setAttribute("x", lx.toFixed(2));
+    txt.setAttribute("y", (ly+6).toFixed(2));
+    txt.setAttribute("class", "tick-label");
+    txt.textContent = v;
+    ticksGroup.appendChild(txt);
+  }
+}
+
+/* ---------- Construct segmented depth bar ---------- */
+/* We'll use 12 segments (each represents 5 mm) to create a visually rich bar,
+   but labels below show 0,10,20...60 as requested. */
+const SEGMENTS = 12;
+function buildSegments() {
+  segmentsContainer.innerHTML = '';
+  for (let i=0;i<SEGMENTS;i++){
+    const seg = document.createElement('div');
+    seg.className = 'segment';
+    // small inner element that grows to full height to represent fill (we'll set width)
+    const inner = document.createElement('div');
+    inner.className = 'segment-inner';
+    inner.style.width = '0%';
+    seg.appendChild(inner);
+    segmentsContainer.appendChild(seg);
+  }
+}
+
+/* ---------- Needle update for rate ---------- */
+function updateNeedle(rate) {
+  const limited = Math.max(0, Math.min(rate, maxRate));
+  const angleDeg = 180 + (limited / maxRate) * 180; // 180 -> 360
+  const rotation = angleDeg - 270; // transform relative to initial up
+  needle.style.transform = `rotate(${rotation}deg)`;
+  needleShadow.style.transform = `rotate(${rotation}deg)`;
+
+  if (rate >= 100 && rate <= 120) {
+    needle.setAttribute('stroke', '#388e3c');
+  } else if (rate >= 80 && rate < 100) {
+    needle.setAttribute('stroke', '#fbc02d');
+  } else {
+    needle.setAttribute('stroke', '#d32f2f');
+  }
+}
+
+/* ---------- Map peaks -> depth (random within ranges) ---------- */
+function mapPeaksToDepth(peaks) {
+  // enforce integer
+  const p = Math.max(0, Math.min(999, Math.floor(peaks)));
+  let depth = 0;
+  let zone = 'red';
+  if (p <= 1) {
+    depth = 15 + Math.random()*10; // 15..25
+    zone = 'red';
+  } else if (p === 2) {
+    depth = 30 + Math.random()*10; // 30..40
+    zone = 'yellow';
+  } else {
+    // 3..5 and above assumed map to deep range
+    depth = 45 + Math.random()*15; // 45..60
+    zone = 'green';
+  }
+  // cap 0..60
+  depth = Math.max(0, Math.min(60, depth));
+  return { depth: parseFloat(depth.toFixed(1)), zone };
+}
+
+/* ---------- Update segmented bar from depth ---------- */
+function updateDepthBar(depthObj) {
+  // depthObj: { depth: number, zone: 'red'|'yellow'|'green' }
+  const depth = depthObj.depth;
+  const zone = depthObj.zone;
+
+  // how many segments to fill (depth/60 * SEGMENTS)
+  const fillSegments = Math.round((depth / 60) * SEGMENTS);
+  const segs = Array.from(segmentsContainer.children);
+
+  // color mapping to hex
+  const zoneColor = zone === 'green' ? '#388e3c' : (zone === 'yellow' ? '#fbc02d' : '#d32f2f');
+
+  // update each segment's inner width and color
+  for (let i=0;i<SEGMENTS;i++){
+    const inner = segs[i].firstChild;
+    if (i < fillSegments) {
+      // fill this segment (full width)
+      inner.style.width = '100%';
+      inner.style.background = zoneColor;
+      inner.style.boxShadow = `0 4px 10px ${hexToRGBA(zoneColor,0.18)}`;
+      // slightly pop filled ones
+      segs[i].style.transform = 'translateY(-2px)';
+    } else {
+      inner.style.width = '0%';
+      inner.style.background = 'transparent';
+      segs[i].style.transform = 'translateY(0px)';
+    }
+  }
+
+  // show numeric depth value with the zone color
+  depthValueEl.textContent = `Depth: ${depth.toFixed(1)} mm`;
+  depthValueEl.style.color = zoneColor;
+}
+
+/* small helper to get rgba from hex */
+function hexToRGBA(hex, alpha){
+  hex = hex.replace('#','');
+  if (hex.length === 3) hex = hex.split('').map(h=>h+h).join('');
+  const r = parseInt(hex.slice(0,2),16);
+  const g = parseInt(hex.slice(2,4),16);
+  const b = parseInt(hex.slice(4,6),16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/* ---------- Bluetooth notification handler ---------- */
+/* Parse both CPR RATE and Peaks in a single notification string.
+   Expected format (either with \r\n or \n):
+     "CPR RATE: 65.0 cpm\r\nPeaks in last 5s: 3\r\n"
+*/
+function handleNotification(raw) {
+  if (!raw || typeof raw !== 'string') return;
+  // try to find both fields
+  const mRate = raw.match(/CPR\s*RATE:\s*([\d.]+)/i);
+  const mPeaks = raw.match(/Peaks\s*in\s*last\s*5s:\s*(\d+)/i);
+
+  if (mRate) {
+    const rate = parseFloat(mRate[1]);
+    updateNeedle(rate);
+    // store rate for potential logging when combined with peaks
+  }
+  if (mRate && mPeaks) {
+    const rate = parseFloat(mRate[1]);
+    const peaks = parseInt(mPeaks[1],10);
+
+    // determine depth from peaks mapping
+    const depthObj = mapPeaksToDepth(peaks);
+
+    // update depth UI
+    updateDepthBar(depthObj);
+
+    // if logging active, push with depth & peaks
+    if (logging) {
+      sessionData.push({
+        trainee: traineeName,
+        time: new Date().toISOString(),
+        rate: rate,
+        peaks: peaks,
+        depth: depthObj.depth
+      });
+    }
+  }
+}
+
+/* ---------- BLUETOOTH + Original training flow (unchanged logic) ---------- */
+connectBtn.addEventListener('click', async () => {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'Proteus' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+    // Event: characteristic value changed
+    characteristic.addEventListener('characteristicvaluechanged', event => {
+      // decode entire chunk (may include both lines)
+      const raw = new TextDecoder().decode(event.target.value);
+      // Normalize line endings
+      const normalized = raw.replace(/\r/g,'');
+      // handle
+      handleNotification(normalized);
+    });
+
+    await characteristic.startNotifications();
+
+    // UI state changes (same behavior as before)
+    statusDot.style.background = '#388e3c';
+    connectBtn.style.display = 'none';
+    disconnectBtn.style.display = 'inline-block';
+    traineeNameInput.style.display = 'inline-block';
+    startTrainingBtn.style.display = 'inline-block';
+    downloadBtn.style.display = 'none';
+    stopTrainingBtn.style.display = 'none';
+
+  } catch (err) {
+    alert('Bluetooth Error: ' + (err && err.message ? err.message : err));
+  }
+});
+
+disconnectBtn.addEventListener('click', async () => {
+  if (device && device.gatt && device.gatt.connected) {
+    await device.gatt.disconnect();
+  }
+  statusDot.style.background = '#d32f2f';
+  connectBtn.style.display = 'inline-block';
+  disconnectBtn.style.display = 'none';
+  traineeNameInput.style.display = 'none';
+  startTrainingBtn.style.display = 'none';
+  stopTrainingBtn.style.display = 'none';
+  downloadBtn.style.display = 'none';
+  logging = false;
+  sessionData = [];
+});
+
+/* Training flow: start/stop logging (connection remains) */
+startTrainingBtn.addEventListener('click', () => {
+  const name = traineeNameInput.value.trim();
+  if (!name) { alert('Please enter trainee name.'); return; }
+  traineeName = name;
+  logging = true;
+  sessionData = [];             // clear previous session
+  traineeNameInput.style.display = 'none';
+  startTrainingBtn.style.display = 'none';
+  stopTrainingBtn.style.display = 'inline-block';
+  downloadBtn.style.display = 'none';
+});
+
+stopTrainingBtn.addEventListener('click', () => {
+  logging = false;
+  stopTrainingBtn.style.display = 'none';
+  if (sessionData.length > 0) downloadBtn.style.display = 'inline-block';
+});
+
+/* CSV export updated to include peaks & depth */
+downloadBtn.addEventListener('click', () => {
+  if (sessionData.length === 0) {
+    alert('No data to download.');
+    return;
+  }
+  // header
+  let csv = 'Trainee Name,Time,CPR Rate,Peaks,Depth(mm)\n';
+  sessionData.forEach(r => {
+    csv += `${escapeCsv(r.trainee)},${r.time},${r.rate},${r.peaks},${r.depth}\n`;
+  });
+
+  // summary (rate & depth)
+  const rates = sessionData.map(r=>r.rate);
+  const depths = sessionData.map(r=>r.depth);
+  const avgRate = (rates.reduce((a,b)=>a+b,0)/rates.length).toFixed(2);
+  const minRate = Math.min(...rates).toFixed(2);
+  const maxRate = Math.max(...rates).toFixed(2);
+  const avgDepth = (depths.reduce((a,b)=>a+b,0)/depths.length).toFixed(2);
+  const minDepth = Math.min(...depths).toFixed(2);
+  const maxDepth = Math.max(...depths).toFixed(2);
+  const inTargetCount = sessionData.filter(r=> r.rate>=100 && r.rate<=120).length;
+  const pctInTarget = ((inTargetCount/sessionData.length)*100).toFixed(1);
+
+  csv += `\nSummary,,,\n`;
+  csv += `Avg Rate,${avgRate},Min Rate,${minRate}\n`;
+  csv += `Max Rate,${maxRate},% In 100-120 CPM,${pctInTarget}%\n`;
+  csv += `Avg Depth,${avgDepth},Min Depth,${minDepth}\n`;
+  csv += `Max Depth,${maxDepth},,\n`;
+
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${traineeName || 'trainee'}_cpr_session.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
+
+function escapeCsv(val) {
+  if (typeof val !== 'string') return val;
+  if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+    return `"${val.replace(/"/g,'""')}"`;
+  }
+  return val;
+}
+
+/* ---------- Init UI on load ---------- */
+drawTicks();
+buildSegments();
+
+/* ---------- Register PWA service worker (unchanged) ---------- */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js')
+    .then(()=>console.log('Service Worker Registered'))
+    .catch(err=>console.warn('SW failed', err));
+}
+</script>
+</body>
+</html>

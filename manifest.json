@@ -1,0 +1,16 @@
+{
+  "name": "CPR Sensor Bluetooth",
+  "short_name": "CPR Sensor",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#388e3c",
+  "description": "CPR training sensor app with Bluetooth connection, real-time gauge display, trainee logging, and CSV export.",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
